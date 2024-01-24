@@ -1,0 +1,97 @@
+---
+title: "EDA"
+author: "Yutong Lu"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+```{r}
+# read datasets
+doctors <- read.csv("df_doctors.csv")
+eval <- read.csv("df_eval360.csv")
+patients <- read.csv("df_patients.csv")
+traj <- read.csv("df_traj.csv")
+
+glimpse(eval)
+```
+
+```{r}
+# data cleaning
+
+# mutate cols based on datadic
+colnames(doctors) <- c("DocID", "num_sites", "leadership","rank","avg_overall","resident_eval", "doc_sex","domain","doc_age","education")
+
+colnames(patients) <- c("DocID", "PtID", "pt_age", "emergency","ICU_type","Charlson","APACHEII_admin", "SOFA_admin","pt_sex","status_discharge","ICU_length_of_stay", "primary_diag")
+
+colnames(traj) <- c("PtID", "day", "SOFA")
+```
+
+```{r}
+# missing values in evaluation
+sum(is.na(eval) == TRUE)
+
+# impute missing values using avg score given by that participant
+mean_score <- rowMeans(eval[ , 1:23], na.rm=TRUE)
+k <- which(is.na(eval), arr.ind=TRUE)
+eval[k] <- mean_score[k[,1]]
+
+# check NA again
+sum(is.na(eval) == TRUE)
+
+eval <- eval %>% mutate(mean_score = mean_score)
+
+meaneval <- eval %>% group_by(DocID) %>% summarise(avg_eval360 = mean(mean_score))
+```
+
+```{r}
+# mutate variables
+patients <- patients %>% mutate(
+  pt_age = case_when(pt_age == "ge60" ~ 1,
+                     TRUE ~ 0),
+  emergency = case_when(emergency == "emerg" ~ 1,
+                        TRUE ~ 0),
+  pt_sex = case_when(pt_sex == "M" ~ 1,
+                     TRUE ~ 0),
+  status_discharge = case_when(status_discharge == "D" ~ 1,
+                               TRUE ~ 0)
+)
+
+doctors <- doctors %>% mutate(
+  doc_age = case_when(doc_age == "50+" ~ 1,
+                      TRUE ~ 0),
+  doc_sex = case_when(doc_sex == "M" ~ 1,
+                     TRUE ~ 0),
+  leadership = case_when(leadership == "leader" ~ 1,
+                         TRUE ~ 0),
+  rank = case_when(rank == "senior" ~ 1,
+                   TRUE ~ 0),
+  num_sites = case_when(num_sites == "2+" ~ 1,
+                        TRUE ~ 0)
+)
+```
+
+
+```{r}
+ptdoc <- patients %>% left_join(doctors, by="DocID") %>% left_join(meaneval, by="DocID")
+```
+
+
+# examine the data sets provided below to determine if the physician 360 evaluations explain any observed differences in patient outcomes (status discharge = A or D)
+
+```{r}
+library(lme4)
+
+fit <- glmer(status_discharge ~ pt_age + emergency + pt_sex + APACHEII_admin + avg_eval360 +
+        (1 | DocID) + (1 | ICU_type),  family = binomial, data = ptdoc)
+
+summary(fit)
+```
+
+
+
+
