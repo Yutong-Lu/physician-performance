@@ -24,11 +24,19 @@ glimpse(eval)
 # data cleaning
 
 # mutate cols based on datadic
-colnames(doctors) <- c("DocID", "num_sites", "leadership","rank","avg_overall","resident_eval", "doc_sex","domain","doc_age","education")
+colnames(doctors) <- c("DocID", "num_sites", "leadership","rank","avg_overall2016","resident_eval", "doc_sex","domain","doc_age","education")
 
 colnames(patients) <- c("DocID", "PtID", "pt_age", "emergency","ICU_type","Charlson","APACHEII_admin", "SOFA_admin","pt_sex","status_discharge","ICU_length_of_stay", "primary_diag")
 
 colnames(traj) <- c("PtID", "day", "SOFA")
+
+# create a change in SOFA score for each patient
+changeSOFA <- traj %>% group_by(PtID) %>%   
+  summarize(
+    start_sofa = first(SOFA),
+    end_sofa = last(SOFA),
+    change_in_sofa = end_sofa - start_sofa
+  )
 ```
 
 ```{r}
@@ -44,53 +52,156 @@ eval[k] <- mean_score[k[,1]]
 sum(is.na(eval) == TRUE)
 
 eval <- eval %>% mutate(mean_score = mean_score)
+eval$medical_expert = rowMeans(eval[,1:3])
+eval$advocacy = eval$Q4
+eval$sci_knowledge = eval$Q5
+eval$professionalism = rowMeans(eval[,6:9])
+eval$communication = rowMeans(eval[,10:14])
+eval$collab = rowMeans(eval[,15:19])
+eval$management = rowMeans(eval[,20:22])
+eval$overall = eval$Q23
 
-meaneval <- eval %>% group_by(DocID) %>% summarise(avg_eval360 = mean(mean_score))
+meaneval <- eval %>% group_by(DocID) %>% summarise(avg_eval360 = mean(mean_score),
+                                                   avg_med = mean(medical_expert),
+                                                   avg_adv = mean(advocacy),
+                                                   avg_sci = mean(sci_knowledge),
+                                                   avg_prof = mean(professionalism),
+                                                   avg_comm = mean(communication),
+                                                   avg_collab = mean(collab),
+                                                   avg_manage = mean(management),
+                                                   avg_overall = mean(overall)
+                                                   )
+colnames(meaneval)
 ```
 
 ```{r}
 # mutate variables
 patients <- patients %>% mutate(
-  pt_age = case_when(pt_age == "ge60" ~ 1,
-                     TRUE ~ 0),
-  emergency = case_when(emergency == "emerg" ~ 1,
-                        TRUE ~ 0),
-  pt_sex = case_when(pt_sex == "M" ~ 1,
-                     TRUE ~ 0),
-  status_discharge = case_when(status_discharge == "D" ~ 1,
-                               TRUE ~ 0)
-)
+  pt_age = as.factor(case_when(pt_age == "ge60" ~ 1,
+                     TRUE ~ 0)),
+  emergency = as.factor(case_when(emergency == "emerg" ~ 1,
+                        TRUE ~ 0)),
+  pt_sex = as.factor(case_when(pt_sex == "M" ~ 1,
+                     TRUE ~ 0)),
+  status_discharge = as.factor(case_when(status_discharge == "D" ~ 1,
+                               TRUE ~ 0))
+  ) %>% 
+  select(-Charlson) # not included bc it predicts 10-year mortality for a patient
 
 doctors <- doctors %>% mutate(
-  doc_age = case_when(doc_age == "50+" ~ 1,
-                      TRUE ~ 0),
-  doc_sex = case_when(doc_sex == "M" ~ 1,
-                     TRUE ~ 0),
-  leadership = case_when(leadership == "leader" ~ 1,
-                         TRUE ~ 0),
-  rank = case_when(rank == "senior" ~ 1,
-                   TRUE ~ 0),
-  num_sites = case_when(num_sites == "2+" ~ 1,
-                        TRUE ~ 0)
-)
+  doc_age = as.factor(case_when(doc_age == "50+" ~ 1,
+                      TRUE ~ 0)),
+  doc_sex = as.factor(case_when(doc_sex == "M" ~ 1,
+                     TRUE ~ 0)),
+  leadership = as.factor(case_when(leadership == "leader" ~ 1,
+                         TRUE ~ 0)),
+  rank = as.factor(case_when(rank == "senior" ~ 1,
+                   TRUE ~ 0)),
+  num_sites = as.factor(case_when(num_sites == "2+" ~ 1,
+                        TRUE ~ 0))
+  ) %>% 
+  select(-education) # do not include eduation in the data because of too many NAs
 ```
-
 
 ```{r}
-ptdoc <- patients %>% left_join(doctors, by="DocID") %>% left_join(meaneval, by="DocID")
+ptdoc <- patients %>% 
+  left_join(changeSOFA, by="PtID") %>% 
+  left_join(doctors, by="DocID") %>% 
+  left_join(meaneval, by="DocID") %>% 
+  select(-start_sofa) # redundant with SOFA_admin
 ```
 
+# Method
+
+## Level 1 Model (Patient-Level)
+
+For patient \( i \) treated by doctor \( j \), the model is:
+
+$$
+\log \left( \frac{p_{ij}}{1 - p_{ij}} \right) = \beta_{0j} + \beta_{1j}X_{1ij} + \beta_2X_{2ij} + \cdots + \beta_kX_{kij}
+$$
+
+Where:
+- \( p_{ij} \) is the probability of the outcome (patient status) being 1.
+- \( X_{1ij} \) is a patient-level explanatory variable for which the slope may vary across doctors.
+- \( X_{2ij}, \ldots, X_{kij} \) are other patient-level explanatory variables with fixed slopes.
+- \( \beta_{0j} \) and \( \beta_{1j} \) are the intercept and slope for \( X_{1ij} \) for doctor \( j \).
+
+## Level 2 Model (Doctor-Level)
+
+The Level 2 model explains the variation in intercepts and slopes across doctors:
+
+$$\begin{aligned}
+\beta_{0j} &= \gamma_{00} + u_{0j} \\
+\beta_{1j} &= \gamma_{10} + u_{1j}
+\end{aligned}$$
+
+Where:
+- \( \gamma_{00} \) and \( \gamma_{10} \) are the average intercept and slope across all doctors.
+- \( u_{0j} \) and \( u_{1j} \) are the random effects for doctor \( j \), representing the deviation of doctor \( j \)'s intercept and slope from the average.
+
+In this model, \( u_{0j} \) and \( u_{1j} \) are assumed to follow a multivariate normal distribution with mean vector 0 and a covariance matrix to be estimated.
+
+The complete hierarchical model combines these two levels, allowing for the examination of patient outcomes while accounting for variability in intercepts and slopes across different doctors.
 
 # examine the data sets provided below to determine if the physician 360 evaluations explain any observed differences in patient outcomes (status discharge = A or D)
 
 ```{r}
 library(lme4)
 
-fit <- glmer(status_discharge ~ pt_age + emergency + pt_sex + APACHEII_admin + avg_eval360 +
-        (1 | DocID) + (1 | ICU_type),  family = binomial, data = ptdoc)
+fit <- glmer(status_discharge ~ pt_age + emergency + pt_sex + ICU_type + # patient demographics
+               SOFA_admin + APACHEII_admin + change_in_sofa + # patient severity
+               avg_overall2016 + resident_eval + avg_eval360 + # doctor evaluation
+               avg_med + avg_adv + avg_sci + avg_prof + avg_comm + avg_collab + 
+               avg_manage + avg_overall +
+               leadership + rank + num_sites + doc_age + # doctor demographics
+        (1 | DocID), # random effects
+        family = binomial, data = ptdoc)
 
 summary(fit)
+
+fiit <- glmer(status_discharge ~ pt_age + emergency + pt_sex + ICU_type + # patient demographics
+               SOFA_admin + APACHEII_admin + change_in_sofa + # patient severity
+               avg_overall2016 + resident_eval + avg_eval360 + # doctor evaluation
+               avg_med + avg_adv + avg_sci + avg_prof + avg_comm + avg_collab + 
+               avg_manage + avg_overall +
+               leadership + rank + num_sites + doc_age + # doctor demographics
+        (1 + change_in_sofa | DocID), # random effects
+        family = binomial, data = ptdoc)
+
+summary(fiit)
+
+library(lmtest)
+lmtest::lrtest(fit, fiit) # use fiit instead
+
+# emergency, pt_sex, ICU_type, avg_eval360, rank, num_sites were not significant
+# only avg_comm is important in all the subsections of eval360
 ```
+
+
+```{r}
+fit1 <- glmer(status_discharge ~ pt_age + # patient demographics
+               SOFA_admin + APACHEII_admin + change_in_sofa + # patient severity
+               avg_overall2016 + resident_eval + avg_comm + # doctor evaluation
+               leadership + doc_age + # doctor demographics
+        (1 + change_in_sofa | DocID), # random effects
+        family = binomial, data = ptdoc)
+
+summary(fit1)
+```
+
+```{r}
+library(DHARMa)
+
+simulationOutput <- simulateResiduals(fittedModel = fit1, plot = F)
+residuals(simulationOutput)
+residuals(simulationOutput, quantileFunction = qnorm, outlierValues = c(-7,7))
+
+plot(simulationOutput)
+testDispersion(simulationOutput)
+```
+
+
 
 
 

@@ -9,7 +9,7 @@ Patients in the ICU represent the most critical cases in the healthcare system, 
 - **Evaluation Method:** 360 feedback evaluations by allied health professionals and peer physicians.
 - **Feedback Domains:** Medical Expert, Communicator, Leader, Advocate, Professional, Scholar, and Collaborator.
 - **Scoring:** 5-point Likert scale.
-- **Characteristics:** Age, background medical discipline, administrative and educational leadership roles, university rank.
+- **Characteristics:** Age, background medical discipline, leadership roles, rank.
 
 ### Patient Participants:
 - **Data Collection:** Demographic, clinical, and administrative data at hospital discharge.
