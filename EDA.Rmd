@@ -6,8 +6,11 @@ output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 library(tidyverse)
+library(gtsummary)
+library(kableExtra)
+library(ggeffects)
 ```
 
 ```{r}
@@ -17,16 +20,12 @@ eval <- read.csv("df_eval360.csv")
 patients <- read.csv("df_patients.csv")
 traj <- read.csv("df_traj.csv")
 
-glimpse(eval)
-```
-
-```{r}
 # data cleaning
 
 # mutate cols based on datadic
 colnames(doctors) <- c("DocID", "num_sites", "leadership","rank","avg_overall2016","resident_eval", "doc_sex","domain","doc_age","education")
 
-colnames(patients) <- c("DocID", "PtID", "pt_age", "emergency","ICU_type","Charlson","APACHEII_admin", "SOFA_admin","pt_sex","status_discharge","ICU_length_of_stay", "primary_diag")
+colnames(patients) <- c("DocID", "PtID", "pt_age", "emergency","ICU_type","Charlson","APACHEII_adm", "SOFA_adm","pt_sex","status_discharge","ICU_length_of_stay", "primary_diag")
 
 colnames(traj) <- c("PtID", "day", "SOFA")
 
@@ -37,46 +36,131 @@ changeSOFA <- traj %>% group_by(PtID) %>%
     end_sofa = last(SOFA),
     change_in_sofa = end_sofa - start_sofa
   )
-```
 
-```{r}
-# missing values in evaluation
-sum(is.na(eval) == TRUE)
+# # missing values in evaluation
+# sum(is.na(eval) == TRUE)
+# 
+# # impute missing values using avg score given by that participant
+# mean_score <- rowMeans(eval[ , 1:23], na.rm=TRUE)
+# k <- which(is.na(eval), arr.ind=TRUE)
+# eval[k] <- mean_score[k[,1]]
+# 
+# # check NA again
+# sum(is.na(eval) == TRUE)
+# 
+# eval <- eval %>% mutate(mean_score = mean_score)
 
-# impute missing values using avg score given by that participant
-mean_score <- rowMeans(eval[ , 1:23], na.rm=TRUE)
-k <- which(is.na(eval), arr.ind=TRUE)
-eval[k] <- mean_score[k[,1]]
-
-# check NA again
-sum(is.na(eval) == TRUE)
-
-eval <- eval %>% mutate(mean_score = mean_score)
-eval$medical_expert = rowMeans(eval[,1:3])
+eval$medical_expert = rowMeans(eval[,1:3], na.rm=TRUE)
 eval$advocacy = eval$Q4
 eval$sci_knowledge = eval$Q5
-eval$professionalism = rowMeans(eval[,6:9])
-eval$communication = rowMeans(eval[,10:14])
-eval$collab = rowMeans(eval[,15:19])
-eval$management = rowMeans(eval[,20:22])
+eval$professionalism = rowMeans(eval[,6:9], na.rm=TRUE)
+eval$communication = rowMeans(eval[,10:14], na.rm=TRUE)
+eval$collab = rowMeans(eval[,15:19], na.rm=TRUE)
+eval$management = rowMeans(eval[,20:22], na.rm=TRUE)
 eval$overall = eval$Q23
 
-meaneval <- eval %>% group_by(DocID) %>% summarise(avg_eval360 = mean(mean_score),
-                                                   avg_med = mean(medical_expert),
-                                                   avg_adv = mean(advocacy),
-                                                   avg_sci = mean(sci_knowledge),
-                                                   avg_prof = mean(professionalism),
-                                                   avg_comm = mean(communication),
-                                                   avg_collab = mean(collab),
-                                                   avg_manage = mean(management),
-                                                   avg_overall = mean(overall)
-                                                   )
-colnames(meaneval)
+meaneval <- eval %>% group_by(DocID) %>% summarise(avg_med = mean(medical_expert, na.rm=TRUE),
+                                                   avg_adv = mean(advocacy, na.rm=TRUE),
+                                                   avg_sci = mean(sci_knowledge, na.rm=TRUE),
+                                                   avg_prof = mean(professionalism, na.rm=TRUE),
+                                                   avg_comm = mean(communication, na.rm=TRUE),
+                                                   avg_collab = mean(collab, na.rm=TRUE),
+                                                   avg_manage = mean(management, na.rm=TRUE),
+                                                   avg_overall = mean(overall, na.rm=TRUE))
+meaneval <- meaneval %>% mutate(avg_eval360 = rowMeans(meaneval[,2:9]))
+
+ptdoc <- patients %>% 
+  left_join(changeSOFA, by="PtID") %>% 
+  left_join(doctors, by="DocID") %>% 
+  left_join(meaneval, by="DocID") %>% 
+  select(-start_sofa) # redundant with SOFA_adm
+# glimpse(ptdoc)
+```
+
+```{r, message=F}
+ptdoc %>% 
+  select(pt_age, pt_sex, primary_diag, ICU_type, ICU_length_of_stay, emergency, 
+         APACHEII_adm, SOFA_adm, end_sofa, change_in_sofa, status_discharge,
+         doc_age, doc_sex, domain, leadership, rank, num_sites,
+         avg_eval360, avg_med, avg_adv, avg_sci, avg_prof,  
+         avg_comm, avg_collab, avg_manage, avg_overall, 
+         avg_overall2016, resident_eval) %>% 
+  mutate(pt_age = as.factor(case_when(pt_age == "ge60" ~ "60 or older",
+                             TRUE ~ "Less than 60")),
+         emergency = as.factor(case_when(emergency == "emerg" ~ "Emergent Response Needed",
+                                TRUE ~ "No Emergent Response Needed")),
+         pt_sex = as.factor(case_when(pt_sex == "M" ~ "Male",
+                             TRUE ~ "Female")),
+         status_discharge = as.factor(case_when(status_discharge == "D" ~ "Dead",
+                                       TRUE ~ "Alive")),
+         doc_age = as.factor(case_when(doc_age == "50+" ~ "50 or older",
+                              TRUE ~ "Less than 50")),
+         doc_sex = as.factor(case_when(doc_sex == "M" ~ "Male",
+                             TRUE ~ "Female")),
+         leadership = as.factor(case_when(leadership == "leader" ~ "Leader",
+                                 TRUE ~ "Non-leader")),
+         rank = as.factor(case_when(rank == "senior" ~ "Senior",
+                           TRUE ~ "Junior")),
+         primary_diag = as.factor(case_when(primary_diag == "cardiovascular" ~ "Cardiovascular",   
+                                            primary_diag == "respiratory" ~ "Respiratory", 
+                                            primary_diag == "gastrointestinal" ~ "Gastrointestinal",
+                                            primary_diag == "neuro" ~ "Neurological",          
+                                            primary_diag == "trauma" ~ "Trauma")),
+         ICU_type = as.factor(case_when(ICU_type == "medical" ~ "Medical",   
+                                        ICU_type == "surgical" ~ "Surgical", 
+                                        ICU_type == "trauma" ~ "Trauma",
+                                        ICU_type == "neuro" ~ "Neurological")),
+         domain = as.factor(case_when(domain == "anesthesia" ~ "Anesthesia",      
+                                      domain == "internal medicine" ~ "Internal medicine",
+                                      domain == "pulmonary medicine" ~ "Pulmonary medicine",
+                                      domain == "emergency" ~ "Emergency",          
+                                      domain == "medicine" ~ "Medicine",    
+                                      domain == "neurology" ~ "Neurology"))) %>% 
+  tbl_summary(
+      statistic = list(all_continuous() ~ "{mean} ({sd})", 
+                       all_categorical() ~ "{n} ({p}%)"),
+      digits = all_continuous() ~ 3,                              
+      label  = list(
+        pt_age ~ "Patient Age",
+        pt_sex ~ "Patient Sex",
+        emergency ~ "Need for Emergent Response at Admission",
+        ICU_type ~ "Type of ICU Admitted",
+        ICU_length_of_stay ~ "Length of Stay in ICU (Days)",
+        APACHEII_adm ~ "APACHEII at Admission",
+        SOFA_adm ~ "SOFA at Admission",
+        status_discharge ~ "Patient Status at Discharge",
+        primary_diag ~ "Patient Primary Diagnosis",
+        end_sofa ~ "SOFA at the End",
+        change_in_sofa ~ "Change in SOFA",
+        doc_sex ~ "Physician Sex",
+        domain ~ "Physician Domain",
+        doc_age ~ "Physician Age",
+        num_sites ~ "Number of ICU Sites the Physician is Working at",
+        leadership ~ "Physician Leadership Role",
+        rank ~ "Physician Rank",
+        avg_eval360 ~ "Average Evaluation 360 Score",
+        avg_med ~ "Average Medical Expert Score",
+        avg_adv ~ "Average Advocacy Score",
+        avg_sci ~ "Average Scientific Knowledge Score",
+        avg_prof ~ "Average Professionalism Score",
+        avg_comm ~ "Average Communication Score",
+        avg_collab ~ "Average Collaboration 360 Score",
+        avg_manage ~ "Average Management Score",
+        avg_overall ~ "Average Overall Score",
+        avg_overall2016 ~ "Average Overall Score 2016",
+        resident_eval ~ "Resident Evaluation Ranking 2016"),
+      missing_text = "Missing"                                   
+    )  %>% 
+  modify_caption("Patient demographic and status, and physician demographics and evaluation scores.") %>% 
+  as_kable_extra(booktab = T,
+                 linesep = "") %>% 
+  kable_styling(font_size = 11) %>% 
+  kable_styling(latex_options = "HOLD_position")
 ```
 
 ```{r}
 # mutate variables
-patients <- patients %>% mutate(
+ptdoc <- ptdoc %>% mutate(
   pt_age = as.factor(case_when(pt_age == "ge60" ~ 1,
                      TRUE ~ 0)),
   emergency = as.factor(case_when(emergency == "emerg" ~ 1,
@@ -84,11 +168,7 @@ patients <- patients %>% mutate(
   pt_sex = as.factor(case_when(pt_sex == "M" ~ 1,
                      TRUE ~ 0)),
   status_discharge = as.factor(case_when(status_discharge == "D" ~ 1,
-                               TRUE ~ 0))
-  ) %>% 
-  select(-Charlson) # not included bc it predicts 10-year mortality for a patient
-
-doctors <- doctors %>% mutate(
+                               TRUE ~ 0)),
   doc_age = as.factor(case_when(doc_age == "50+" ~ 1,
                       TRUE ~ 0)),
   doc_sex = as.factor(case_when(doc_sex == "M" ~ 1,
@@ -100,26 +180,24 @@ doctors <- doctors %>% mutate(
   num_sites = as.factor(case_when(num_sites == "2+" ~ 1,
                         TRUE ~ 0))
   ) %>% 
-  select(-education) # do not include eduation in the data because of too many NAs
-```
-
-```{r}
-ptdoc <- patients %>% 
-  left_join(changeSOFA, by="PtID") %>% 
-  left_join(doctors, by="DocID") %>% 
-  left_join(meaneval, by="DocID") %>% 
-  select(-start_sofa) # redundant with SOFA_admin
+  select(-c("education", "Charlson")) # do not include education in the data because of too many NAs
 ```
 
 # Method
 
-## Level 1 Model (Patient-Level)
+## Data Description
+
+The data used in this study is from the 2022 case study from Statistical Society of Canada, which was a set of simulated data sets of ICU patient characteristics, patient trajactory, physician 360-evaluation results, and physician characteristics ().
+
+## Generalized Linear Mixed Model 
+
+
+
+### Level 1 Model (Patient-Level)
 
 For patient \( i \) treated by doctor \( j \), the model is:
 
-$$
-\log \left( \frac{p_{ij}}{1 - p_{ij}} \right) = \beta_{0j} + \beta_{1j}X_{1ij} + \beta_2X_{2ij} + \cdots + \beta_kX_{kij}
-$$
+$$\log \left( \frac{p_{ij}}{1 - p_{ij}} \right) = \beta_{0j} + \beta_{1j}X_{1ij} + \beta_2X_{2ij} + \cdots + \beta_kX_{kij}$$
 
 Where:
 - \( p_{ij} \) is the probability of the outcome (patient status) being 1.
@@ -127,7 +205,7 @@ Where:
 - \( X_{2ij}, \ldots, X_{kij} \) are other patient-level explanatory variables with fixed slopes.
 - \( \beta_{0j} \) and \( \beta_{1j} \) are the intercept and slope for \( X_{1ij} \) for doctor \( j \).
 
-## Level 2 Model (Doctor-Level)
+### Level 2 Model (Doctor-Level)
 
 The Level 2 model explains the variation in intercepts and slopes across doctors:
 
@@ -144,56 +222,63 @@ In this model, \( u_{0j} \) and \( u_{1j} \) are assumed to follow a multivariat
 
 The complete hierarchical model combines these two levels, allowing for the examination of patient outcomes while accounting for variability in intercepts and slopes across different doctors.
 
-# examine the data sets provided below to determine if the physician 360 evaluations explain any observed differences in patient outcomes (status discharge = A or D)
+# One possible way to approach this case study challenge would be to examine the variability between ICU physicians on the outcomes of their critically ill patients. One may examine the data sets provided below to determine if the physician 360 evaluations explain any observed differences in patient outcomes.
 
 ```{r}
 library(lme4)
+library(lmtest)
 
 fit <- glmer(status_discharge ~ pt_age + emergency + pt_sex + ICU_type + # patient demographics
-               SOFA_admin + APACHEII_admin + change_in_sofa + # patient severity
+               SOFA_adm + APACHEII_adm + change_in_sofa + ICU_length_of_stay + # patient severity
                avg_overall2016 + resident_eval + avg_eval360 + # doctor evaluation
-               avg_med + avg_adv + avg_sci + avg_prof + avg_comm + avg_collab + 
-               avg_manage + avg_overall +
+               # avg_med + avg_adv + avg_sci + avg_prof + avg_comm + avg_collab +
+               # avg_manage + avg_overall +
                leadership + rank + num_sites + doc_age + # doctor demographics
         (1 | DocID), # random effects
         family = binomial, data = ptdoc)
 
 summary(fit)
 
-fiit <- glmer(status_discharge ~ pt_age + emergency + pt_sex + ICU_type + # patient demographics
-               SOFA_admin + APACHEII_admin + change_in_sofa + # patient severity
-               avg_overall2016 + resident_eval + avg_eval360 + # doctor evaluation
-               avg_med + avg_adv + avg_sci + avg_prof + avg_comm + avg_collab + 
-               avg_manage + avg_overall +
+# fit1 <- glmer(status_discharge ~ pt_age + emergency + pt_sex + # patient demographics
+#                SOFA_adm + APACHEII_adm + change_in_sofa + # patient severity
+#                avg_overall2016 + resident_eval + avg_eval360 + # doctor evaluation
+#                # avg_med + avg_adv + avg_sci + avg_prof + avg_comm + avg_collab +
+#                # avg_manage + avg_overall +
+#                leadership + rank + num_sites + doc_age + # doctor demographics
+#         (1 | DocID) + (1 | ICU_type), # random effects
+#         family = binomial, data = ptdoc)
+# 
+# lmtest::lrtest(fit, fit1)
+
+fit2 <- glmer(status_discharge ~ pt_age + emergency + pt_sex + ICU_type + # patient demographics
+               SOFA_adm + APACHEII_adm + change_in_sofa + ICU_length_of_stay + # patient severity
+               avg_overall2016 + resident_eval +  avg_eval360 + # doctor evaluation
+               # avg_med + avg_adv + avg_sci + avg_prof + avg_comm + avg_collab +
+               # avg_manage + avg_overall +
                leadership + rank + num_sites + doc_age + # doctor demographics
         (1 + change_in_sofa | DocID), # random effects
         family = binomial, data = ptdoc)
 
-summary(fiit)
+summary(fit2)
 
-library(lmtest)
-lmtest::lrtest(fit, fiit) # use fiit instead
-
-# emergency, pt_sex, ICU_type, avg_eval360, rank, num_sites were not significant
-# only avg_comm is important in all the subsections of eval360
+lmtest::lrtest(fit, fit2) # use fit2 instead
 ```
 
-
 ```{r}
-fit1 <- glmer(status_discharge ~ pt_age + # patient demographics
-               SOFA_admin + APACHEII_admin + change_in_sofa + # patient severity
-               avg_overall2016 + resident_eval + avg_comm + # doctor evaluation
+fit3 <- glmer(status_discharge ~ pt_age + # patient demographics
+               SOFA_adm + APACHEII_adm + change_in_sofa + ICU_length_of_stay + # patient severity
+               avg_overall2016 + resident_eval + # doctor evaluation
                leadership + doc_age + # doctor demographics
         (1 + change_in_sofa | DocID), # random effects
         family = binomial, data = ptdoc)
 
-summary(fit1)
+summary(fit3)
 ```
 
 ```{r}
 library(DHARMa)
 
-simulationOutput <- simulateResiduals(fittedModel = fit1, plot = F)
+simulationOutput <- simulateResiduals(fittedModel = fit3, plot = F)
 residuals(simulationOutput)
 residuals(simulationOutput, quantileFunction = qnorm, outlierValues = c(-7,7))
 
@@ -201,7 +286,80 @@ plot(simulationOutput)
 testDispersion(simulationOutput)
 ```
 
+```{r}
+plot(ggemmeans(fit3, terms = c("avg_overall2016 [all]","resident_eval"), 
+               condition = c(leadership = "0", doc_age = "0"))) + 
+  ggplot2::ggtitle("GLMER Effect plot: no leadership role and younger than 50")
+plot(ggemmeans(fit3, terms = c("avg_overall2016 [all]","resident_eval"), 
+               condition = c(leadership = "1", doc_age = "1"))) + 
+  ggplot2::ggtitle("GLMER Effect plot: leadership role and at least 50 years old")
+```
 
+
+## develop a weighted score for doctor evaluation
+
+```{r}
+w1 <- abs(summary(fit3)$coef[7, 1]/summary(fit3)$coef[7, 2])[1] # avg_overall2016 weight
+w2 <- abs(summary(fit3)$coef[8, 1]/summary(fit3)$coef[8, 2])[1] # resident_eval weight
+w3 <- abs(summary(fit3)$coef[9, 1]/summary(fit3)$coef[9, 2])[1] # leadership weight
+w4 <- abs(summary(fit3)$coef[10, 1]/summary(fit3)$coef[10, 2])[1] # doc_age weight
+
+doc_new <- ptdoc %>% 
+  group_by(DocID) %>% 
+  summarise(prop_alive = sum(status_discharge == "0")/n(),
+            mean_change_sofa = mean(change_in_sofa)) %>% 
+  left_join(doctors, by = "DocID") %>% 
+  mutate(
+    doc_age = case_when(doc_age == "50+" ~ 1,
+                        TRUE ~ 0),
+    doc_sex = case_when(doc_sex == "M" ~ 1,
+                       TRUE ~ 0),
+    leadership = case_when(leadership == "leader" ~ 1,
+                           TRUE ~ 0),
+    rank = case_when(rank == "senior" ~ 1,
+                     TRUE ~ 0),
+    num_sites = case_when(num_sites == "2+" ~ 1,
+                          TRUE ~ 0),
+    weighted_score = w1*avg_overall2016 + w2*resident_eval + w3*leadership + w4*doc_age
+    ) %>%
+  left_join(meaneval, by = "DocID")
+```
+
+```{r}
+fit_doc <- lm(weighted_score ~ prop_alive, data = doc_new)
+plot(fit_doc)
+doc_new %>% ggplot(aes(x=prop_alive, y = weighted_score)) +
+  geom_point(color = 'red') +
+  geom_smooth(method = 'lm')
+```
+
+# Alternatively, individuals that work in a particular ICU may have developed a ‘team culture’ and therefore examining outcome by ICU might be another approach. 
+
+```{r}
+cnt <- ptdoc %>% group_by(DocID, ICU_type) %>% 
+  summarise(d = sum(status_discharge == "1"),
+            y = sum(ICU_length_of_stay),
+            mean_sofa = mean(SOFA_adm))
+
+model1 <- glm(d ~ DocID + ICU_type + mean_sofa + offset(log(y)), family=poisson(link="log"),
+              data = cnt)
+summary(model1)
+
+```
+
+
+
+# Results
+
+
+
+
+# Discussion
+
+- future step: use ICU length of stay as the time-to-event outcome and use status discharge as status for survival analysis
+
+# References
+1. 
 
 
 
